@@ -1,150 +1,137 @@
-# Chess Engine Container — cutechess-cli adapter
+# ♟️ Chess Engine Container
 
-Reusable Docker template: CUDA-capable container whose UCI engine is callable
-by [cutechess-cli](https://github.com/cutechess/cutechess) as a normal
-executable.  Tucano is bundled as a test engine; swap it for your own when
-ready.
+> Szablon kontenera Dockerowego dla silników szachowych z obsługą GPU (NVIDIA CUDA) — przygotowany dla Koła Naukowego.
 
 ---
 
-## How it works
+## Opis projektu
+
+Ten projekt to kompletny szablon kontenera Dockerowego, który pozwala uruchamiać silniki szachowe w izolowanym środowisku i komunikować się z programami sędziowskimi (np. Cute Chess) za pomocą uniwersalnego adaptera. Obsługuje akcelerację GPU przez NVIDIA CUDA.
+
+Jako silnik testowy wykorzystany został **Tucano**, skompilowany z obsługą sieci neuronowych (NNUE).
+
+---
+
+## Jak to działa? (Architektura)
+
+Większość programów sędziowskich wymaga lokalnego pliku wykonywalnego. Ten projekt rozwiązuje to za pomocą **adaptera — lekkiego skryptu po stronie hosta**, który udaje silnik:
 
 ```
-cutechess-cli
-    │  exec()
+Cute Chess (Sędzia)
+    │  wywołuje skrypt lokalny
     ▼
-engine-adapter.sh          ← host-side shim (the "engine" binary)
+engine-adapter.sh          ← Host-side shim (udaje silnik)
     │  docker run -i
     ▼
-Container (chess-engine:latest)
+Kontener (chess-engine)    ← Izolowane środowisko
     │  ENTRYPOINT
     ▼
-/usr/local/bin/engine      ← UCI engine inside container
+/usr/local/bin/engine      ← Silnik szachowy w kontenerze
     │  stdin / stdout
-    └──────────────────────── UCI protocol back to cutechess
+    └──────────────────────── Protokół UCI (przez strumienie)
 ```
 
-cutechess communicates with engines over **stdin/stdout** using UCI (or
-XBoard).  The adapter is nothing more than `docker run --rm -i <image>` —
-Docker passes the pipe straight through, so cutechess never knows there is a
-container in the middle.
+Dzięki flagom `--interactive` i `--init` komunikacja UCI przechodzi przez kontener **przezroczyście**, a sygnały systemowe (np. zatrzymanie gry) są poprawnie przekazywane.
 
 ---
 
-## Quick start
+## Wymagania wstępne
 
-### 1. Prerequisites
+| Narzędzie | Wersja | Uwagi |
+|---|---|---|
+| **Docker** | 20.10+ | Wymagany |
+| **NVIDIA Container Toolkit** | dowolna | Opcjonalny (tylko dla GPU) |
+| **Cute Chess** | CLI lub GUI | Do przeprowadzania rozgrywek |
 
-| Tool | Minimum version |
-|---|---|
-| Docker | 20.10 |
-| NVIDIA Container Toolkit | any (optional — skipped if no GPU) |
-| cutechess-cli | 1.3.0 |
+---
 
-### 2. Build
+## Szybki start
+
+Wszystkie kluczowe operacje są zautomatyzowane w pliku `Makefile`.
+
+### Budowanie obrazu
+
+Zbuduje kontener, skompiluje silnik Tucano i pobierze wymaganą sieć neuronową:
 
 ```bash
 make build
-# or manually:
-docker build -t chess-engine:latest .
 ```
 
-### 3. Smoke-test the engine (no cutechess needed)
+### Test komunikacji (Smoke-test)
+
+Sprawdzi, czy kontener działa i czy silnik poprawnie odpowiada na komendę `uci`:
 
 ```bash
 make test-uci
 ```
 
-Expected output:
-```
---- UCI handshake test ---
-PASS: engine responded with uciok
-```
+### Testowa partia (Self-play)
 
-### 4. Run a self-play game with cutechess-cli
+Uruchomi automatyczną partię (Tucano vs Tucano) za pomocą `cutechess-cli`:
 
 ```bash
-# Make sure cutechess-cli is on PATH (or set CUTECHESS=/path/to/cutechess-cli)
 make test-game
 ```
 
-### 5. Use in your own cutechess-cli command
+---
+
+## Organizacja turnieju
+
+### Gra między różnymi drużynami
+
+Nie musisz kopiować adaptera dla każdego uczestnika. Możesz użyć tego samego skryptu, podając nazwę obrazu przez zmienną środowiskową:
 
 ```bash
-chmod +x engine-adapter.sh
-
 cutechess-cli \
-  -engine cmd=/absolute/path/to/engine-adapter.sh name=MyEngine proto=uci \
-  -engine cmd=stockfish name=Stockfish proto=uci \
-  -each tc=40/60 \
-  -games 10
+    -engine name="Druzyna_A" cmd="env ENGINE_IMAGE=obraz_a ./engine-adapter.sh" proto=uci \
+    -engine name="Druzyna_B" cmd="env ENGINE_IMAGE=obraz_b ./engine-adapter.sh" proto=uci \
+    -each tc=40/60 -games 2 -rounds 1 -pgnout wyniki.pgn
 ```
+
+### Użycie w Cute Chess GUI
+
+1. Otwórz **Cute Chess GUI**.
+2. Przejdź do **Tools → Settings → Engines**.
+3. Kliknij **Add** i w polu *Command* wskaż plik `engine-adapter.sh`.
+4. *(Opcjonalnie)* Aby zmienić obraz w GUI, wyeksportuj zmienną `ENGINE_IMAGE` przed uruchomieniem Cute Chess w terminalu.
 
 ---
 
-## Environment variables for the adapter
+## Konfiguracja adaptera
 
-| Variable | Default | Description |
+Adapter wspiera następujące zmienne środowiskowe (ustawiane przez `env`):
+
+| Zmienna | Domyślnie | Opis |
 |---|---|---|
-| `ENGINE_IMAGE` | `chess-engine:latest` | Docker image to run |
-| `ENGINE_CMD` | *(ENTRYPOINT)* | Override container command |
-| `ENGINE_GPU` | `auto` | Set `0` to disable `--gpus all` |
-| `ENGINE_MEMORY` | `2g` | `--memory` limit |
-| `ENGINE_CPUS` | *(none)* | `--cpus` quota |
-| `ENGINE_NET` | `none` | `--network` mode |
-| `ENGINE_EXTRA_ARGS` | *(none)* | Extra `docker run` flags (space-separated) |
+| `ENGINE_IMAGE` | `chess-engine:latest` | Tag obrazu Docker do uruchomienia |
+| `ENGINE_GPU` | `auto` | `0` wyłącza GPU; `auto` wykrywa `nvidia-smi` na hoście |
+| `ENGINE_MEMORY` | `2g` | Limit pamięci RAM dla kontenera |
+| `ENGINE_CPUS` | *(brak)* | Limit rdzeni CPU (np. `1.0`) |
 
-Example — run on CPU only with 4 GB RAM:
+---
+
+## Podmiana silnika na własny
+
+Aby przygotować własny silnik:
+
+1. Edytuj `Dockerfile`.
+2. Zastąp sekcję `# Build Tucano` własnymi instrukcjami kompilacji.
+3. Upewnij się, że finalny plik binarny znajduje się pod ścieżką `/usr/local/bin/engine` wewnątrz kontenera.
+4. Zbuduj i przetestuj:
+
 ```bash
-ENGINE_IMAGE=chess-engine:latest ENGINE_GPU=0 ENGINE_MEMORY=4g \
-  cutechess-cli -engine cmd=./engine-adapter.sh ...
+make build
+make test-uci
 ```
 
 ---
 
-## Swapping in your own engine
+## Pomoc techniczna
 
-1. **Edit `Dockerfile`** — replace the Tucano build section with your engine.
-2. Make sure your engine binary ends up at `/usr/local/bin/engine` (or adjust
-   `ENTRYPOINT`).
-3. If your engine needs CUDA at runtime keep the `devel` base image; for
-   inference-only you can switch to the lighter `runtime` variant:
-   ```dockerfile
-   FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04
-   ```
-4. `make build && make test-uci`
+**Problem z uprawnieniami Dockera na Linuxie?** Wykonaj:
 
----
-
-## File layout
-
-```
-.
-├── Dockerfile          CUDA base + engine build
-├── engine-adapter.sh   Host shim — the "binary" cutechess calls
-├── Makefile            Build / test helpers
-└── README.md           This file
-```
-
----
-
-## Troubleshooting
-
-**`uciok` never arrives**
-Run `make shell` and test the engine manually:
 ```bash
-printf "uci\nquit\n" | /usr/local/bin/engine
+sudo usermod -aG docker $USER
 ```
 
-**cutechess reports "engine crashed"**
-Check that the adapter is executable (`chmod +x engine-adapter.sh`) and that
-`docker` is on your `PATH`.
-
-**GPU not detected**
-Verify with `nvidia-smi` on the host.  The adapter falls back to CPU
-automatically when no GPU is found.
-
-**Tucano Makefile fails**
-Tucano's source uses a plain `Makefile`; it needs `g++`.  If the binary ends
-up named `Tucano` (capital T) the Dockerfile's `find` command will still
-locate and copy it — check with `make shell` and `ls /usr/local/bin/engine`.
+> Wymagane wylogowanie i ponowne zalogowanie, aby zmiany weszły w życie.
